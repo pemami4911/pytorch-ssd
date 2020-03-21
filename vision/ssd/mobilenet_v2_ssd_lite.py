@@ -71,44 +71,6 @@ def create_mobilenetv2_ssd_lite_predictor(net, candidate_size=200, nms_method=No
     return predictor
 
 
-
-def create_mobilenetv2_ssd_lite(num_classes, width_mult=1.0, use_batch_norm=True, onnx_compatible=False, is_test=False, device='cuda'):
-    base_net = MobileNetV2(width_mult=width_mult, use_batch_norm=use_batch_norm,
-                           onnx_compatible=onnx_compatible).features
-
-    source_layer_indexes = [
-        GraphPath(14, 'conv', 3),
-        19,
-    ]
-    extras = ModuleList([
-        InvertedResidual(1280, 512, stride=2, expand_ratio=0.2),
-        InvertedResidual(512, 256, stride=2, expand_ratio=0.25),
-        InvertedResidual(256, 256, stride=2, expand_ratio=0.5),
-        InvertedResidual(256, 64, stride=2, expand_ratio=0.25)
-    ])
-
-    regression_headers = ModuleList([
-        SeperableConv2d(in_channels=round(576 * width_mult), out_channels=6 * 4,
-                        kernel_size=3, padding=1, onnx_compatible=False),
-        SeperableConv2d(in_channels=1280, out_channels=6 * 4, kernel_size=3, padding=1, onnx_compatible=False),
-        SeperableConv2d(in_channels=512, out_channels=6 * 4, kernel_size=3, padding=1, onnx_compatible=False),
-        SeperableConv2d(in_channels=256, out_channels=6 * 4, kernel_size=3, padding=1, onnx_compatible=False),
-        SeperableConv2d(in_channels=256, out_channels=6 * 4, kernel_size=3, padding=1, onnx_compatible=False),
-        Conv2d(in_channels=64, out_channels=6 * 4, kernel_size=1),
-    ])
-
-    classification_headers = ModuleList([
-        SeperableConv2d(in_channels=round(576 * width_mult), out_channels=6 * num_classes, kernel_size=3, padding=1),
-        SeperableConv2d(in_channels=1280, out_channels=6 * num_classes, kernel_size=3, padding=1),
-        SeperableConv2d(in_channels=512, out_channels=6 * num_classes, kernel_size=3, padding=1),
-        SeperableConv2d(in_channels=256, out_channels=6 * num_classes, kernel_size=3, padding=1),
-        SeperableConv2d(in_channels=256, out_channels=6 * num_classes, kernel_size=3, padding=1),
-        Conv2d(in_channels=64, out_channels=6 * num_classes, kernel_size=1),
-    ])
-
-    return SSD(num_classes, base_net, source_layer_indexes,
-               extras, classification_headers, regression_headers, is_test=is_test, config=config, device=device)
-
     
 def create_mobilenetv2_ms_ssd_lite(num_classes, width_mult=1.0, use_batch_norm=True, onnx_compatible=False, is_test=False, device='cuda'):
     base_net = MobileNetV2(width_mult=width_mult, use_batch_norm=use_batch_norm,

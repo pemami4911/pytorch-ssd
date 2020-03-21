@@ -7,13 +7,14 @@ from ..utils.misc import Timer
 
 class Predictor:
     def __init__(self, net, size, mean=0.0, std=1.0, nms_method=None,
-                 iou_threshold=0.45, filter_threshold=0.01, candidate_size=200, sigma=0.5, device=None):
+                 iou_threshold=0.45, filter_threshold=0.01, candidate_size=200, sigma=0.5, reid=False, device=None):
         self.net = net
         self.transform = PredictionTransform(size, mean, std)
         self.iou_threshold = iou_threshold
         self.filter_threshold = filter_threshold
         self.candidate_size = candidate_size
         self.nms_method = nms_method
+        self.reid = reid
 
         self.sigma = sigma
         if device:
@@ -34,8 +35,10 @@ class Predictor:
         images = images.to(self.device)
         with torch.no_grad():
             self.timer.start()
-            scores, boxes = self.net.forward(images)
-            print("Inference time: ", self.timer.end())
+            if not self.reid:
+                scores, boxes = self.net.forward(images)
+            else:
+                scores, boxes, features = self.net.forward(images)
         boxes = boxes[0]
         scores = scores[0]
         if not prob_threshold:
@@ -68,4 +71,7 @@ class Predictor:
         picked_box_probs[:, 1] *= height
         picked_box_probs[:, 2] *= width
         picked_box_probs[:, 3] *= height
-        return picked_box_probs[:, :4], torch.tensor(picked_labels), picked_box_probs[:, 4]
+        if not self.reid:
+            return picked_box_probs[:, :4], torch.tensor(picked_labels), picked_box_probs[:, 4]
+        else:
+            return picked_box_probs[:, :4], torch.tensor(picked_labels), picked_box_probs[:, 4], features
