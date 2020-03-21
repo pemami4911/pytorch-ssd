@@ -13,15 +13,18 @@ from vision.ssd.ssd import MatchPrior
 from vision.ssd.vgg_ssd import create_vgg_ssd
 from vision.ssd.mobilenetv1_ssd import create_mobilenetv1_ssd
 from vision.ssd.mobilenetv1_ssd_lite import create_mobilenetv1_ssd_lite
-from vision.ssd.mobilenet_v2_ssd_lite import create_mobilenetv2_ssd_lite
+from vision.ssd.mobilenet_v2_ssd_lite import create_mobilenetv2_ssd_lite, create_mobilenetv2_ms_ssd_lite
 from vision.ssd.squeezenet_ssd_lite import create_squeezenet_ssd_lite
 from vision.datasets.voc_dataset import VOCDataset
 from vision.datasets.open_images import OpenImagesDataset
+from vision.datasets.detrac_dataset import UADETRAC_Detection_Dataset
+from vision.datasets.detrac_reid import UADETRAC_ReID_Dataset
 from vision.nn.multibox_loss import MultiboxLoss
+from vision.nn.reid import NTXEntLoss
 from vision.ssd.config import vgg_ssd_config
 from vision.ssd.config import mobilenetv1_ssd_config
 from vision.ssd.config import squeezenet_ssd_config
-from vision.ssd.data_preprocessing import TrainAugmentation, TestTransform
+from vision.ssd.data_preprocessing import TrainAugmentation, TestTransform, ReIDTransform
 
 parser = argparse.ArgumentParser(
     description='Single Shot MultiBox Detector Training With Pytorch')
@@ -33,7 +36,10 @@ parser.add_argument('--datasets', nargs='+', help='Dataset directory path')
 parser.add_argument('--validation_dataset', help='Dataset directory path')
 parser.add_argument('--balance_data', action='store_true',
                     help="Balance training data by down-sampling more frequent labels.")
-
+parser.add_argument('--label_file', type=str, help='Train labels file')
+parser.add_argument('--validation_label_file', type=str, help='Val labels file')
+parser.add_argument('--label_dir', type=str, help='Train labels directory path')
+parser.add_argument('--validation_label_dir', type=str, help='Validation labels directory path')
 
 parser.add_argument('--net', default="vgg16-ssd",
                     help="The network architecture, it can be mb1-ssd, mb1-lite-ssd, mb2-ssd-lite or vgg16-ssd.")
@@ -41,6 +47,8 @@ parser.add_argument('--freeze_base_net', action='store_true',
                     help="Freeze base net layers.")
 parser.add_argument('--freeze_net', action='store_true',
                     help="Freeze all the layers except the prediction head.")
+parser.add_argument('--freeze_detector', action='store_true',
+                    help="Freeze all detection layers")
 
 parser.add_argument('--mb2_width_mult', default=1.0, type=float,
                     help='Width Multiplifier for MobilenetV2')
@@ -64,6 +72,8 @@ parser.add_argument('--extra_layers_lr', default=None, type=float,
 parser.add_argument('--base_net',
                     help='Pretrained base model')
 parser.add_argument('--pretrained_ssd', help='Pre-trained base model')
+parser.add_argument('--pretrained_detector', help='Pre-trained model')
+
 parser.add_argument('--resume', default=None, type=str,
                     help='Checkpoint state_dict file to resume training from')
 
@@ -143,6 +153,34 @@ def train(loader, net, criterion, optimizer, device, debug_steps=100, epoch=-1):
             running_classification_loss = 0.0
 
 
+def train_reid(loader, net, criterion, optimizer, device, debug_steps=100, epoch=-1):
+    net.train(True)
+    running_loss = 0.0
+    for i, data in enumerate(loader):
+        images1, boxes1, images2, boxes2 = data
+        images1 = images1.to(device)
+        boxes1 = boxes1.to(device)
+        images2 = images2.to(device)
+        boxes2 = boxes2.to(device)
+
+        optimizer.zero_grad()
+        _, _, features1 = net(images1)
+        _,_, features2 = net(images2)
+
+        loss = criterion(features1, features2, boxes1, boxes2)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+        if i and i % debug_steps == 0:
+            avg_loss = running_loss / debug_steps
+            logging.info(
+                f"Epoch: {epoch}, Step: {i}, " +
+                f"Average Loss: {avg_loss:.4f}, "
+            )
+            running_loss = 0.0
+
+
 def test(loader, net, criterion, device):
     net.eval()
     running_loss = 0.0
@@ -167,6 +205,27 @@ def test(loader, net, criterion, device):
     return running_loss / num, running_regression_loss / num, running_classification_loss / num
 
 
+def test_reid(loader, net, criterion, device):
+    net.eval()
+    running_loss = 0.0
+    num = 0
+    for _, data in enumerate(loader):
+        images1, boxes1, images2, boxes2 = data
+        images1 = images1.to(device)
+        boxes1 = boxes1.to(device)
+        images2 = images2.to(device)
+        boxes2 = boxes2.to(device)
+    
+        with torch.no_grad():
+            _, _, features1 = net(images1)
+            _,_, features2 = net(images2)
+
+            loss = criterion(features1, features2, boxes1, boxes2)
+        num += 1
+
+        running_loss += loss.item()
+    return running_loss / num
+
 if __name__ == '__main__':
     timer = Timer()
 
@@ -186,11 +245,17 @@ if __name__ == '__main__':
     elif args.net == 'mb2-ssd-lite':
         create_net = lambda num: create_mobilenetv2_ssd_lite(num, width_mult=args.mb2_width_mult)
         config = mobilenetv1_ssd_config
+    elif args.net == 'mb2-ms-ssd-lite':
+        create_net = lambda num: create_mobilenetv2_ms_ssd_lite(num, width_mult=args.mb2_width_mult)
+        config = mobilenetv1_ssd_config
     else:
         logging.fatal("The net type is wrong.")
         parser.print_help(sys.stderr)
         sys.exit(1)
-    train_transform = TrainAugmentation(config.image_size, config.image_mean, config.image_std)
+    if not args.dataset_type == 'ua-detrac-reid':
+        train_transform = TrainAugmentation(config.image_size, config.image_mean, config.image_std)
+    else:
+        train_transform = ReIDTransform(config.image_size, config.image_mean, config.image_std)
     target_transform = MatchPrior(config.priors, config.center_variance,
                                   config.size_variance, 0.5)
 
@@ -204,7 +269,7 @@ if __name__ == '__main__':
                                  target_transform=target_transform)
             label_file = os.path.join(args.checkpoint_folder, "voc-model-labels.txt")
             store_labels(label_file, dataset.class_names)
-            num_classes = len(dataset.class_names)
+            logging.info(f"Stored labels into file {label_file}.")
         elif args.dataset_type == 'open_images':
             dataset = OpenImagesDataset(dataset_path,
                  transform=train_transform, target_transform=target_transform,
@@ -212,12 +277,19 @@ if __name__ == '__main__':
             label_file = os.path.join(args.checkpoint_folder, "open-images-model-labels.txt")
             store_labels(label_file, dataset.class_names)
             logging.info(dataset)
-            num_classes = len(dataset.class_names)
-
+            logging.info(f"Stored labels into file {label_file}.")
+        elif args.dataset_type == 'ua-detrac':
+            dataset = UADETRAC_Detection_Dataset(dataset_path, args.label_dir, transform=train_transform,
+                                                target_transform=target_transform)
+            logging.info(dataset)
+        elif args.dataset_type == 'ua-detrac-reid':
+            dataset = UADETRAC_ReID_Dataset(dataset_path, args.label_file, transform=train_transform)
+            logging.info(dataset)
         else:
             raise ValueError(f"Dataset type {args.dataset_type} is not supported.")
         datasets.append(dataset)
-    logging.info(f"Stored labels into file {label_file}.")
+    
+    num_classes = len(dataset.class_names)
     train_dataset = ConcatDataset(datasets)
     logging.info("Train dataset size: {}".format(len(train_dataset)))
     train_loader = DataLoader(train_dataset, args.batch_size,
@@ -232,6 +304,13 @@ if __name__ == '__main__':
                                         transform=test_transform, target_transform=target_transform,
                                         dataset_type="test")
         logging.info(val_dataset)
+    elif args.dataset_type == 'ua-detrac':
+        val_dataset = UADETRAC_Detection_Dataset(args.validation_dataset, args.validation_label_dir,
+                                                 transform=test_transform, target_transform=target_transform)
+    elif args.dataset_type == 'ua-detrac-reid':
+        val_dataset = UADETRAC_ReID_Dataset(args.validation_dataset, args.validation_label_file,
+                                            transform=test_transform)
+
     logging.info("validation dataset size: {}".format(len(val_dataset)))
 
     val_loader = DataLoader(val_dataset, args.batch_size,
@@ -265,6 +344,13 @@ if __name__ == '__main__':
         freeze_net_layers(net.extras)
         params = itertools.chain(net.regression_headers.parameters(), net.classification_headers.parameters())
         logging.info("Freeze all the layers except prediction heads.")
+    elif args.freeze_detector:
+        freeze_net_layers(net.base_net)
+        freeze_net_layers(net.source_layer_add_ons)
+        freeze_net_layers(net.extras)   
+        freeze_net_layers(net.regression_headers)
+        freeze_net_layers(net.classification_headers)
+        params = net.re_id_head.parameters()
     else:
         params = [
             {'params': net.base_net.parameters(), 'lr': base_net_lr},
@@ -288,12 +374,18 @@ if __name__ == '__main__':
     elif args.pretrained_ssd:
         logging.info(f"Init from pretrained ssd {args.pretrained_ssd}")
         net.init_from_pretrained_ssd(args.pretrained_ssd)
+    elif args.pretrained_detector:
+        logging.info(f"Init from pretrained detector {args.pretrained_detector}")
+        net.init_from_pretrained_detector(args.pretrained_detector)
     logging.info(f'Took {timer.end("Load Model"):.2f} seconds to load the model.')
 
     net.to(DEVICE)
-
-    criterion = MultiboxLoss(config.priors, iou_threshold=0.5, neg_pos_ratio=3,
-                             center_variance=0.1, size_variance=0.2, device=DEVICE)
+    
+    if args.dataset_type != 'ua-detrac-reid':
+        criterion = MultiboxLoss(config.priors, iou_threshold=0.5, neg_pos_ratio=3,
+                                 center_variance=0.1, size_variance=0.2, device=DEVICE)
+    else:
+        criterion = NTXEntLoss(temperature=0.5)
     optimizer = torch.optim.SGD(params, lr=args.lr, momentum=args.momentum,
                                 weight_decay=args.weight_decay)
     logging.info(f"Learning rate: {args.lr}, Base net learning rate: {base_net_lr}, "
@@ -314,18 +406,28 @@ if __name__ == '__main__':
 
     logging.info(f"Start training from epoch {last_epoch + 1}.")
     for epoch in range(last_epoch + 1, args.num_epochs):
+        if args.dataset_type != 'ua-detrac-reid':
+            train(train_loader, net, criterion, optimizer,
+                  device=DEVICE, debug_steps=args.debug_steps, epoch=epoch)
+        else:
+            train_reid(train_loader, net, criterion, optimizer,
+                    device=DEVICE, debug_steps=args.debug_steps, epoch=epoch)
         scheduler.step()
-        train(train_loader, net, criterion, optimizer,
-              device=DEVICE, debug_steps=args.debug_steps, epoch=epoch)
-        
         if epoch % args.validation_epochs == 0 or epoch == args.num_epochs - 1:
-            val_loss, val_regression_loss, val_classification_loss = test(val_loader, net, criterion, DEVICE)
-            logging.info(
-                f"Epoch: {epoch}, " +
-                f"Validation Loss: {val_loss:.4f}, " +
-                f"Validation Regression Loss {val_regression_loss:.4f}, " +
-                f"Validation Classification Loss: {val_classification_loss:.4f}"
-            )
+            if not args.dataset_type == 'ua-detrac-reid':
+                val_loss, val_regression_loss, val_classification_loss = test(val_loader, net, criterion, DEVICE)
+                logging.info(
+                    f"Epoch: {epoch}, " +
+                    f"Validation Loss: {val_loss:.4f}, " +
+                    f"Validation Regression Loss {val_regression_loss:.4f}, " +
+                    f"Validation Classification Loss: {val_classification_loss:.4f}"
+                )
+            else:
+                val_loss = test_reid(val_loader, net, criterion, DEVICE)
+                logging.info(
+                    f"Epoch: {epoch}, " +
+                    f"Validation Loss: {val_loss:.4f}, "
+                )
             model_path = os.path.join(args.checkpoint_folder, f"{args.net}-Epoch-{epoch}-Loss-{val_loss}.pth")
             net.save(model_path)
             logging.info(f"Saved model {model_path}")

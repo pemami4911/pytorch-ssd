@@ -124,6 +124,13 @@ class SSD(nn.Module):
         self.classification_headers.apply(_xavier_init_)
         self.regression_headers.apply(_xavier_init_)
 
+    def init_from_pretrained_detector(self, model):
+        state_dict = torch.load(model, map_location=lambda storage, loc: storage)
+        model_dict = self.state_dict()
+        model_dict.update(state_dict)
+        self.load_state_dict(model_dict)
+        self.re_id_head.apply(_xavier_init_)
+
     def init(self):
         self.base_net.apply(_xavier_init_)
         self.source_layer_add_ons.apply(_xavier_init_)
@@ -148,9 +155,9 @@ class MatchPrior(object):
 
     def __call__(self, gt_boxes, gt_labels):
         if type(gt_boxes) is np.ndarray:
-            gt_boxes = torch.from_numpy(gt_boxes)
+            gt_boxes = torch.from_numpy(gt_boxes).float()
         if type(gt_labels) is np.ndarray:
-            gt_labels = torch.from_numpy(gt_labels)
+            gt_labels = torch.from_numpy(gt_labels).long()
         boxes, labels = box_utils.assign_priors(gt_boxes, gt_labels,
                                                 self.corner_form_priors, self.iou_threshold)
         boxes = box_utils.corner_form_to_center_form(boxes)
@@ -161,3 +168,88 @@ class MatchPrior(object):
 def _xavier_init_(m: nn.Module):
     if isinstance(m, nn.Conv2d):
         nn.init.xavier_uniform_(m.weight)
+
+
+class MS_SSD(SSD):
+    def __init__(self, num_classes: int, base_net: nn.ModuleList, source_layer_indexes: List[int],
+                 extras: nn.ModuleList, classification_headers: nn.ModuleList,
+                 regression_headers: nn.ModuleList, re_id_head: nn.ModuleList,
+                 is_test=False, config=None, device=None):
+        """Compose a SSD model using the given components.
+        """
+        super(MS_SSD, self).__init__(num_classes, base_net, source_layer_indexes, extras,
+                classification_headers, regression_headers, is_test, config, device)
+
+        self.re_id_head = re_id_head
+
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        confidences = []
+        locations = []
+        start_layer_index = 0
+        header_index = 0
+        features = None
+        for end_layer_index in self.source_layer_indexes:
+            if isinstance(end_layer_index, GraphPath):
+                path = end_layer_index
+                end_layer_index = end_layer_index.s0
+                added_layer = None
+            elif isinstance(end_layer_index, tuple):
+                added_layer = end_layer_index[1]
+                end_layer_index = end_layer_index[0]
+                path = None
+            else:
+                added_layer = None
+                path = None
+            for feature_idx,layer in enumerate(self.base_net[start_layer_index: end_layer_index]):
+                # Re-ID features
+                if features is None and feature_idx == 7:
+                    features = x.clone()  # 38x38 with 32 dim
+                x = layer(x)
+            if added_layer:
+                y = added_layer(x)
+            else:
+                y = x
+            if path:
+                sub = getattr(self.base_net[end_layer_index], path.name)
+                for layer in sub[:path.s1]:
+                    x = layer(x)
+                y = x
+                for layer in sub[path.s1:]:
+                    x = layer(x)
+                end_layer_index += 1
+            start_layer_index = end_layer_index
+            confidence, location = self.compute_header(header_index, y)
+            header_index += 1
+            confidences.append(confidence)
+            locations.append(location)
+
+        for layer in self.base_net[end_layer_index:]:
+            x = layer(x)
+
+        for layer in self.extras:
+            x = layer(x)
+            confidence, location = self.compute_header(header_index, x)
+            header_index += 1
+            confidences.append(confidence)
+            locations.append(location)
+
+        confidences = torch.cat(confidences, 1)
+        locations = torch.cat(locations, 1)
+    
+        # re-id stuff
+        for layer_idx,layer in enumerate(self.re_id_head):
+            # skip last layer at test time
+            if self.is_test and layer_idx == len(self.re_id_head)-2:
+                break
+            features = layer(features)
+        
+        if self.is_test:
+            confidences = F.softmax(confidences, dim=2)
+            boxes = box_utils.convert_locations_to_boxes(
+                locations, self.priors, self.config.center_variance, self.config.size_variance
+            )
+            boxes = box_utils.center_form_to_corner_form(boxes)
+            return confidences, boxes, features
+        else:
+            return confidences, locations, features
