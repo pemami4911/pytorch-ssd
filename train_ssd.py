@@ -89,6 +89,9 @@ parser.add_argument('--milestones', default="80,100", type=str,
 parser.add_argument('--t_max', default=120, type=float,
                     help='T_max value for Cosine Annealing Scheduler.')
 
+# Params for Re-ID
+parser.add_argument('--temperature', default=1.0, type=float,
+                    help='NTExt temperature for contrastive representation learning')
 # Train params
 parser.add_argument('--batch_size', default=32, type=int,
                     help='Batch size for training')
@@ -105,7 +108,7 @@ parser.add_argument('--use_cuda', default=True, type=str2bool,
 
 parser.add_argument('--checkpoint_folder', default='models/',
                     help='Directory for saving checkpoint models')
-
+parser.add_argument('--model_suffix', default='', type=str)
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -385,7 +388,7 @@ if __name__ == '__main__':
         criterion = MultiboxLoss(config.priors, iou_threshold=0.5, neg_pos_ratio=3,
                                  center_variance=0.1, size_variance=0.2, device=DEVICE)
     else:
-        criterion = NTXEntLoss(temperature=0.5)
+        criterion = NTXEntLoss(temperature=args.temperature)
     optimizer = torch.optim.SGD(params, lr=args.lr, momentum=args.momentum,
                                 weight_decay=args.weight_decay)
     logging.info(f"Learning rate: {args.lr}, Base net learning rate: {base_net_lr}, "
@@ -428,6 +431,11 @@ if __name__ == '__main__':
                     f"Epoch: {epoch}, " +
                     f"Validation Loss: {val_loss:.4f}, "
                 )
-            model_path = os.path.join(args.checkpoint_folder, f"{args.net}-Epoch-{epoch}-Loss-{val_loss}.pth")
+            model_path = os.path.join(args.checkpoint_folder, f"{args.net}-{args.model_suffix}-Epoch-{epoch}-Loss-{val_loss}.pth")
             net.save(model_path)
             logging.info(f"Saved model {model_path}")
+
+            #if args.dataset_type == 'ua-detrac-reid':
+            #    args.temperature = args.temperature / 2.
+            #    print('new temperature: {}'.format(args.temperature))
+            #    criterion = NTXEntLoss(temperature=args.temperature)

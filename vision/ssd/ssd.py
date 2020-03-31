@@ -205,6 +205,7 @@ class MS_SSD(SSD):
                 # Re-ID features
                 if features is None and feature_idx == 7:
                     features = x.clone()  # 38x38 with 32 dim
+                    
                 x = layer(x)
             if added_layer:
                 y = added_layer(x)
@@ -219,37 +220,39 @@ class MS_SSD(SSD):
                     x = layer(x)
                 end_layer_index += 1
             start_layer_index = end_layer_index
-            confidence, location = self.compute_header(header_index, y)
+            #confidence, location = self.compute_header(header_index, y)
             header_index += 1
-            confidences.append(confidence)
-            locations.append(location)
+            #confidences.append(confidence)
+            #locations.append(location)
 
-        for layer in self.base_net[end_layer_index:]:
-            x = layer(x)
+        #for layer in self.base_net[end_layer_index:]:
+        #    x = layer(x)
+#
+        #for layer in self.extras:
+        #    x = layer(x)
+        #    confidence, location = self.compute_header(header_index, x)
+        #    header_index += 1
+        #    confidences.append(confidence)
+        #    locations.append(location)
 
-        for layer in self.extras:
-            x = layer(x)
-            confidence, location = self.compute_header(header_index, x)
-            header_index += 1
-            confidences.append(confidence)
-            locations.append(location)
-
-        confidences = torch.cat(confidences, 1)
-        locations = torch.cat(locations, 1)
+        #confidences = torch.cat(confidences, 1)
+        #locations = torch.cat(locations, 1)
     
         # re-id stuff
         for layer_idx,layer in enumerate(self.re_id_head):
             # skip last layer at test time
-            if self.is_test and layer_idx == len(self.re_id_head)-2:
-                break
+            #if self.is_test and layer_idx == len(self.re_id_head)-2:
+            #    break
             features = layer(features)
         
         if self.is_test:
-            confidences = F.softmax(confidences, dim=2)
-            boxes = box_utils.convert_locations_to_boxes(
-                locations, self.priors, self.config.center_variance, self.config.size_variance
-            )
-            boxes = box_utils.center_form_to_corner_form(boxes)
-            return confidences, boxes, features
+            #confidences = F.softmax(confidences, dim=2)
+            #boxes = box_utils.convert_locations_to_boxes(
+            #    locations, self.priors, self.config.center_variance, self.config.size_variance
+            #)
+            #boxes = box_utils.center_form_to_corner_form(boxes)
+            #return confidences, boxes, features
+            return None, None, features
         else:
-            return confidences, locations, features
+            #return confidences, locations, features
+            return None, None, features

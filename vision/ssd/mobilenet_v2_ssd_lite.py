@@ -59,7 +59,7 @@ def create_mobilenetv2_ssd_lite(num_classes, width_mult=1.0, use_batch_norm=True
                extras, classification_headers, regression_headers, is_test=is_test, config=config, device=device)
 
 
-def create_mobilenetv2_ssd_lite_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, device=torch.device('cpu')):
+def create_mobilenetv2_ssd_lite_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, reid=False, device=torch.device('cpu')):
     predictor = Predictor(net, config.image_size, config.image_mean,
                           config.image_std,
                           nms_method=nms_method,
@@ -67,6 +67,7 @@ def create_mobilenetv2_ssd_lite_predictor(net, candidate_size=200, nms_method=No
                           candidate_size=candidate_size,
                           filter_threshold=0.1,
                           sigma=sigma,
+                          reid=reid,
                           device=device)
     return predictor
 
@@ -108,10 +109,12 @@ def create_mobilenetv2_ms_ssd_lite(num_classes, width_mult=1.0, use_batch_norm=T
 
     # at 300x300 hxw, 8x downsample is 38x38
     re_id_head = ModuleList([
-        SeperableConv2d(in_channels=32, out_channels=128, kernel_size=3, padding=1),
-        SeperableConv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-        SeperableConv2d(in_channels=256, out_channels=64, kernel_size=3, padding=1),
-        Conv2d(in_channels=64, out_channels=64, kernel_size=1)  # contrastive loss output, throw away at test
+        SeperableConv2d(in_channels=32, out_channels=256, kernel_size=3, padding=1),
+        SeperableConv2d(in_channels=256, out_channels=512, kernel_size=3, padding=1),
+        SeperableConv2d(in_channels=512, out_channels=1024, kernel_size=3, padding=1),
+        SeperableConv2d(in_channels=1024, out_channels=512, kernel_size=3, padding=1),
+        SeperableConv2d(in_channels=512, out_channels=256, kernel_size=3, padding=1),
+        SeperableConv2d(in_channels=256, out_channels=128, kernel_size=3, padding=1),
     ])
 
     return MS_SSD(num_classes, base_net, source_layer_indexes,

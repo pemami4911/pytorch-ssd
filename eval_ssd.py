@@ -1,4 +1,6 @@
 import torch
+from torch.utils.data import DataLoader
+
 from vision.ssd.vgg_ssd import create_vgg_ssd, create_vgg_ssd_predictor
 from vision.ssd.mobilenetv1_ssd import create_mobilenetv1_ssd, create_mobilenetv1_ssd_predictor
 from vision.ssd.mobilenetv1_ssd_lite import create_mobilenetv1_ssd_lite, create_mobilenetv1_ssd_lite_predictor
@@ -6,7 +8,8 @@ from vision.ssd.squeezenet_ssd_lite import create_squeezenet_ssd_lite, create_sq
 from vision.datasets.voc_dataset import VOCDataset
 from vision.datasets.open_images import OpenImagesDataset
 from vision.datasets.detrac_dataset import UADETRAC_Detection_Dataset
-from vision.utils import box_utils, measurements
+from vision.datasets.detrac_reid import UADETRAC_ReID_Dataset
+from vision.utils import box_utils, measurements, descriptor_utils
 from vision.utils.misc import str2bool, Timer
 import argparse
 import pathlib
@@ -14,9 +17,11 @@ import numpy as np
 import logging
 import sys
 from vision.ssd.mobilenet_v2_ssd_lite import create_mobilenetv2_ssd_lite, create_mobilenetv2_ssd_lite_predictor
+from vision.ssd.mobilenet_v2_ssd_lite import create_mobilenetv2_ms_ssd_lite
 from vision.ssd.data_preprocessing import TrainAugmentation, TestTransform
 from vision.ssd.config import mobilenetv1_ssd_config
-
+from vision.ssd.data_preprocessing import TestTransform
+from tqdm import tqdm
 
 parser = argparse.ArgumentParser(description="SSD Evaluation on VOC Dataset.")
 parser.add_argument('--net', default="vgg16-ssd",
@@ -35,6 +40,11 @@ parser.add_argument("--iou_threshold", type=float, default=0.5, help="The thresh
 parser.add_argument("--eval_dir", default="eval_results", type=str, help="The directory to store evaluation results.")
 parser.add_argument('--mb2_width_mult', default=1.0, type=float,
                     help='Width Multiplifier for MobilenetV2')
+parser.add_argument('--temperature', default=0.1, type=float)
+
+# Matching Eval
+parser.add_argument('--match_candidates', type=int, default=10, help="candidate matches to rank, higher is harder")
+
 args = parser.parse_args()
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() and args.use_cuda else "cpu")
 
@@ -122,6 +132,38 @@ def compute_average_precision_per_class(num_true_cases, gt_boxes, difficult_case
     else:
         return measurements.compute_average_precision(precision, recall)
 
+def compute_nn_metric(features1, features2, bbox1, bbox2, temp=1):
+    """
+    For each candidate in features1, there is one match and candidates-1 false matches.
+    
+    Compute the fraction out of #candidates attempts that the correct match is the NN 
+    match.
+
+    Args:
+        features1: (candidates, D)
+        features2: (candidates, D)
+        boxes1: (candidates,4)
+        boxes2: (candidates,4)
+    """
+    candidates = features1.shape[0]
+    desc1 = descriptor_utils.get_descriptors(features1, bbox1.squeeze(1).float())
+    desc2 = descriptor_utils.get_descriptors(features2, bbox2.squeeze(1).float())
+
+    desc1 = desc1.unsqueeze(1).repeat_interleave(candidates,1)
+    desc2 = desc2.unsqueeze(0).repeat_interleave(candidates,0)
+
+    cosine_sim = torch.nn.functional.cosine_similarity(desc1,desc2,dim=2)  # (candidates,candidates)
+    cosine_sim /= temp
+    # get max 1-->2
+    idxs = torch.max(cosine_sim, dim=0, keepdim=False)[1]
+    
+    idxs = idxs.data.cpu().numpy()  # (candidates)
+    targets = np.arange(candidates)  # (candidates)
+
+    correct = (idxs == targets)
+    score = float((correct).sum()) / float(candidates)
+    return score
+
 
 if __name__ == '__main__':
     eval_path = pathlib.Path(args.eval_dir)
@@ -137,7 +179,14 @@ if __name__ == '__main__':
         true_case_stat, all_gb_boxes, all_difficult_cases = group_annotation_by_class(dataset)
     elif args.dataset_type == 'ua-detrac':
         dataset = UADETRAC_Detection_Dataset(args.dataset, args.label_dir)
-    
+        class_names = dataset.class_names
+    elif args.dataset_type == 'ua-detrac-reid':
+        config = mobilenetv1_ssd_config
+        test_transform = TestTransform(config.image_size, config.image_mean, config.image_std)
+        dataset = UADETRAC_ReID_Dataset(args.dataset, args.label_file, transform=test_transform)
+        class_names = dataset.class_names
+        matching_loader = DataLoader(dataset, args.match_candidates, num_workers=0, shuffle=False, drop_last=True)
+
     if args.net == 'vgg16-ssd':
         net = create_vgg_ssd(len(class_names), is_test=True, device=DEVICE)
     elif args.net == 'mb1-ssd':
@@ -148,6 +197,9 @@ if __name__ == '__main__':
         net = create_squeezenet_ssd_lite(len(class_names), is_test=True)
     elif args.net == 'mb2-ssd-lite':
         net = create_mobilenetv2_ssd_lite(len(class_names), width_mult=args.mb2_width_mult, is_test=True, device=DEVICE)
+    elif args.net == 'mb2-ms-ssd-lite':
+        net = create_mobilenetv2_ms_ssd_lite(len(class_names), width_mult=args.mb2_width_mult, is_test=True, device=DEVICE)
+
     else:
         logging.fatal("The net type is wrong. It should be one of vgg16-ssd, mb1-ssd and mb1-ssd-lite.")
         parser.print_help(sys.stderr)
@@ -167,75 +219,93 @@ if __name__ == '__main__':
         predictor = create_squeezenet_ssd_lite_predictor(net,nms_method=args.nms_method, device=DEVICE)
     elif args.net == 'mb2-ssd-lite':
         predictor = create_mobilenetv2_ssd_lite_predictor(net, nms_method=args.nms_method, device=DEVICE)
+    elif args.net == 'mb2-ms-ssd-lite':
+        predictor = create_mobilenetv2_ssd_lite_predictor(net, device=DEVICE, reid=True)
     else:
         logging.fatal("The net type is wrong. It should be one of vgg16-ssd, mb1-ssd and mb1-ssd-lite.")
         parser.print_help(sys.stderr)
         sys.exit(1)
 
-    with open(eval_path / "dets.txt", "w+") as f:
-        results = []
-        cur_seq = ""
-        frame_count = 0
-        for i in range(len(dataset)):
-            print("process image", i)
-            timer.start("Load Image")
-            if args.dataset_type == 'ua-detrac':
-                image, frame_id, sequence = dataset.get_image(i)
-                if cur_seq != sequence:
-                    cur_seq = sequence
-                    frame_count = 0
-            else:
-                image = dataset.get_image(i)
-            #print("Load Image: {:4f} seconds.".format(timer.end("Load Image")))
-            timer.start("Predict")
-            boxes, labels, probs = predictor.predict(image)
-            #print("Prediction: {:4f} seconds.".format(timer.end("Predict")))
-            indexes = torch.ones(labels.size(0), 1, dtype=torch.float32) * i
-            results.append(torch.cat([
-                indexes.reshape(-1, 1),
-                labels.reshape(-1, 1).float(),
-                probs.reshape(-1, 1),
-                boxes + 1.0  # matlab's indexes start from 1
-            ], dim=1))
-            boxes = boxes.data.cpu().numpy()
-            labels = labels.data.cpu().numpy()
-            probs = probs.data.cpu().numpy()
-            for j in range(boxes.shape[0]):
-                
-                f.write("{},{},{},{},{},{},{},{},{}\n".format(cur_seq,frame_id,j,boxes[j,0],boxes[j,1],boxes[j,2],boxes[j,3],probs[j],labels[j]))
-            frame_count += 1
-          
-#     results = torch.cat(results)
-#     for class_index, class_name in enumerate(class_names):
-#         if class_index == 0: continue  # ignore background
-#         prediction_path = eval_path / f"det_test_{class_name}.txt"
-#         with open(prediction_path, "w") as f:
-#             sub = results[results[:, 1] == class_index, :]
-#             for i in range(sub.size(0)):
-#                 prob_box = sub[i, 2:].numpy()
-#                 image_id = dataset.ids[int(sub[i, 0])]
-#                 print(
-#                     image_id + " " + " ".join([str(v) for v in prob_box]),
-#                     file=f
-#                 )
-#     aps = []
-#     print("\n\nAverage Precision Per-class:")
-#     for class_index, class_name in enumerate(class_names):
-#         if class_index == 0:
-#             continue
-#         prediction_path = eval_path / f"det_test_{class_name}.txt"
-#         ap = compute_average_precision_per_class(
-#             true_case_stat[class_index],
-#             all_gb_boxes[class_index],
-#             all_difficult_cases[class_index],
-#             prediction_path,
-#             args.iou_threshold,
-#             args.use_2007_metric
-#         )
-#         aps.append(ap)
-#         print(f"{class_name}: {ap}")
+    if not args.dataset_type == 'ua-detrac-reid':
+        with open(eval_path / "dets.txt", "w+") as f:
+            results = []
+            cur_seq = ""
+            frame_count = 0
+            for i in range(len(dataset)):
+                print("process image", i)
+                timer.start("Load Image")
+                if args.dataset_type == 'ua-detrac':
+                    image, frame_id, sequence = dataset.get_image(i)
+                    if cur_seq != sequence:
+                        cur_seq = sequence
+                        frame_count = 0
+                else:
+                    image = dataset.get_image(i)
+                #print("Load Image: {:4f} seconds.".format(timer.end("Load Image")))
+                timer.start("Predict")
+                boxes, labels, probs = predictor.predict(image)
+                #print("Prediction: {:4f} seconds.".format(timer.end("Predict")))
+                indexes = torch.ones(labels.size(0), 1, dtype=torch.float32) * i
+                results.append(torch.cat([
+                    indexes.reshape(-1, 1),
+                    labels.reshape(-1, 1).float(),
+                    probs.reshape(-1, 1),
+                    boxes + 1.0  # matlab's indexes start from 1
+                ], dim=1))
+                boxes = boxes.data.cpu().numpy()
+                labels = labels.data.cpu().numpy()
+                probs = probs.data.cpu().numpy()
+                for j in range(boxes.shape[0]):
+                    
+                    f.write("{},{},{},{},{},{},{},{},{}\n".format(cur_seq,frame_id,j,boxes[j,0],boxes[j,1],boxes[j,2],boxes[j,3],probs[j],labels[j]))
+                frame_count += 1
+              
+    #     results = torch.cat(results)
+    #     for class_index, class_name in enumerate(class_names):
+    #         if class_index == 0: continue  # ignore background
+    #         prediction_path = eval_path / f"det_test_{class_name}.txt"
+    #         with open(prediction_path, "w") as f:
+    #             sub = results[results[:, 1] == class_index, :]
+    #             for i in range(sub.size(0)):
+    #                 prob_box = sub[i, 2:].numpy()
+    #                 image_id = dataset.ids[int(sub[i, 0])]
+    #                 print(
+    #                     image_id + " " + " ".join([str(v) for v in prob_box]),
+    #                     file=f
+    #                 )
+    #     aps = []
+    #     print("\n\nAverage Precision Per-class:")
+    #     for class_index, class_name in enumerate(class_names):
+    #         if class_index == 0:
+    #             continue
+    #         prediction_path = eval_path / f"det_test_{class_name}.txt"
+    #         ap = compute_average_precision_per_class(
+    #             true_case_stat[class_index],
+    #             all_gb_boxes[class_index],
+    #             all_difficult_cases[class_index],
+    #             prediction_path,
+    #             args.iou_threshold,
+    #             args.use_2007_metric
+    #         )
+    #         aps.append(ap)
+    #         print(f"{class_name}: {ap}")
 
-#     print(f"\nAverage Precision Across All Classes:{sum(aps)/len(aps)}")
+    #     print(f"\nAverage Precision Across All Classes:{sum(aps)/len(aps)}")
+    else:
+        match_score = []
+        for i, data in tqdm(enumerate(matching_loader)):
+            images1, boxes1, images2, boxes2 = data
+            images1 = images1.to(DEVICE)
+            boxes1 = boxes1.to(DEVICE)
+            images2 = images2.to(DEVICE)
+            boxes2 = boxes2.to(DEVICE)
 
+            _, _, features1 = net(images1)
+            _, _, features2 = net(images2)
 
+            score = compute_nn_metric(features1, features2, boxes1, boxes2, args.temperature)
+            match_score += [score]
 
+        avg_score = np.mean(match_score)
+
+        print(f"\nAverage match score {avg_score}")

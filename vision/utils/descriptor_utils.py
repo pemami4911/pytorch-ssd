@@ -18,6 +18,6 @@ def get_descriptors(features, bboxes,shrinkage=16):
     pts = torch.cat([x.unsqueeze(1), y.unsqueeze(1)],1)  # [B,2]
     pts = pts.view(-1,1,1,2)
     sampled_features = torch.nn.functional.grid_sample(features,pts).squeeze()  # [B,C]
-    sampled_features = sampled_features / torch.norm(sampled_features, 1, keepdim=True)
+    sampled_features = sampled_features / torch.norm(sampled_features, dim=1, keepdim=True)
     return sampled_features
     
