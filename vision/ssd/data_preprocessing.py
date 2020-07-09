@@ -45,9 +45,9 @@ class ReIDTransform:
         self.size = size
         self.augment = Compose([
             ConvertFromInts(),
-            #PhotometricDistort(),
-            #Expand(self.mean),
-            #RandomMirror(),
+            PhotometricDistort(),
+            Expand(self.mean),
+            RandomMirror(),
             ToPercentCoords(),
             Resize(self.size),
             SubtractMeans(self.mean),

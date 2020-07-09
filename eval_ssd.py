@@ -169,7 +169,7 @@ if __name__ == '__main__':
     eval_path = pathlib.Path(args.eval_dir)
     eval_path.mkdir(exist_ok=True)
     timer = Timer()
-    class_names = [name.strip() for name in open(args.label_file).readlines()]
+    #class_names = [name.strip() for name in open(args.label_file).readlines()]
 
     if args.dataset_type == "voc":
         dataset = VOCDataset(args.dataset, is_test=True)
@@ -231,14 +231,18 @@ if __name__ == '__main__':
             results = []
             cur_seq = ""
             frame_count = 0
+            w, h, a = [], [], []
             for i in range(len(dataset)):
                 print("process image", i)
                 timer.start("Load Image")
                 if args.dataset_type == 'ua-detrac':
-                    image, frame_id, sequence = dataset.get_image(i)
+                    image, frame_id, sequence, sizes = dataset.get_image(i)
                     if cur_seq != sequence:
                         cur_seq = sequence
                         frame_count = 0
+                    w += [sizes[:,0]]
+                    h += [sizes[:,1]]
+                    a += [sizes[:,0] / sizes[:,1]]
                 else:
                     image = dataset.get_image(i)
                 #print("Load Image: {:4f} seconds.".format(timer.end("Load Image")))
@@ -259,7 +263,11 @@ if __name__ == '__main__':
                     
                     f.write("{},{},{},{},{},{},{},{},{}\n".format(cur_seq,frame_id,j,boxes[j,0],boxes[j,1],boxes[j,2],boxes[j,3],probs[j],labels[j]))
                 frame_count += 1
-              
+            print('mean/max/min width: {}/{},{}, mean/max/min height: {},{},{}, mean/max/min aspect: {},{},{}'.format(
+                np.mean(np.concatenate(w)), np.max(np.concatenate(w)), np.min(np.concatenate(w)),
+                np.mean(np.concatenate(h)), np.max(np.concatenate(h)), np.min(np.concatenate(h)),
+                np.mean(np.concatenate(a)), np.max(np.concatenate(a)), np.min(np.concatenate(a))
+                ))
     #     results = torch.cat(results)
     #     for class_index, class_name in enumerate(class_names):
     #         if class_index == 0: continue  # ignore background

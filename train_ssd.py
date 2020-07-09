@@ -431,11 +431,12 @@ if __name__ == '__main__':
                     f"Epoch: {epoch}, " +
                     f"Validation Loss: {val_loss:.4f}, "
                 )
+
             model_path = os.path.join(args.checkpoint_folder, f"{args.net}-{args.model_suffix}-Epoch-{epoch}-Loss-{val_loss}.pth")
             net.save(model_path)
             logging.info(f"Saved model {model_path}")
 
-            #if args.dataset_type == 'ua-detrac-reid':
-            #    args.temperature = args.temperature / 2.
-            #    print('new temperature: {}'.format(args.temperature))
-            #    criterion = NTXEntLoss(temperature=args.temperature)
+            if args.dataset_type == 'ua-detrac-reid' and args.temperature > 0.1:
+                args.temperature = args.temperature / 2.
+                print('new temperature: {}'.format(args.temperature))
+                criterion = NTXEntLoss(temperature=args.temperature)

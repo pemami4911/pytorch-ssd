@@ -76,6 +76,7 @@ class UADETRAC_Detection_Dataset(data.Dataset):
                             'frame_id': j+1
                             }
                     self.all_data.append(out_dict)
+                    labels[j]
                 frame_idx += 1
 
             if parse_tracks:
@@ -98,21 +99,25 @@ class UADETRAC_Detection_Dataset(data.Dataset):
         frame_id = cur['frame_id']
         boxes = []
         labels = []
+        sizes = []
         for frame in label:
             boxes += [frame['bbox']]
             labels += [frame['class']]
+            sizes += [frame['size']]
         boxes = np.array(boxes)
         labels = np.array(labels)
+        sizes = np.array(sizes).reshape(len(label),-1)
+
         if self.transform:
             image, boxes, labels = self.transform(image, boxes, labels)
         for k,v in self.sequence_index_map.items():
             if index >= k:
                 continue
-            return image, boxes, labels, frame_id, v
+            return image, boxes, labels, frame_id, v, sizes
 
     def get_image(self, i):
-        image, boxes, labels, frame_id, seq = self._get_sample(i)
-        return image, frame_id, seq
+        image, boxes, labels, frame_id, seq, sizes = self._get_sample(i)
+        return image, frame_id, seq, sizes
 
     def __len__(self):
         """ returns total number of frames in all tracks"""
@@ -120,7 +125,7 @@ class UADETRAC_Detection_Dataset(data.Dataset):
     
     def __getitem__(self,index):
         """ returns item indexed from all frames in all tracks"""
-        image, boxes, labels, _, _ = self._get_sample(index)
+        image, boxes, labels, _, _, _ = self._get_sample(index)
         if self.target_transform:
             boxes, labels = self.target_transform(boxes, labels)
         return image, boxes, labels
@@ -180,7 +185,8 @@ class UADETRAC_Detection_Dataset(data.Dataset):
                         #'color':stats['color'],
                         'orientation':float(stats['orientation']),
                         'truncation':float(stats['truncation_ratio']),
-                        'bbox':bbox
+                        'bbox':bbox,
+                        'size': (float(coords['width']), float(coords['height']))
                         }
                 
                 frame_boxes.append(det_dict)

@@ -114,7 +114,7 @@ def create_mobilenetv2_ms_ssd_lite(num_classes, width_mult=1.0, use_batch_norm=T
         SeperableConv2d(in_channels=512, out_channels=1024, kernel_size=3, padding=1),
         SeperableConv2d(in_channels=1024, out_channels=512, kernel_size=3, padding=1),
         SeperableConv2d(in_channels=512, out_channels=256, kernel_size=3, padding=1),
-        SeperableConv2d(in_channels=256, out_channels=128, kernel_size=3, padding=1),
+        SeperableConv2d(in_channels=256, out_channels=32, kernel_size=3, padding=1),
     ])
 
     return MS_SSD(num_classes, base_net, source_layer_indexes,
